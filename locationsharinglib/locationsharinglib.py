@@ -239,8 +239,44 @@ class Service(object):
                'challenge/sl/password').format(login_url=self._login_url)
         payload['Passwd'] = self.password
         response = self._session.post(url, data=payload)
+        if "Unavailable because of too many failed attempts." in response.text:
+            message = ("Too many failed login attempts. Try again in a few hours.")
+            raise InvalidCredentials(message)
         if INVALID_PASSWORD_TOKEN in response.text:
             raise InvalidCredentials
+        if "challenge/az" in response.url:
+            response = self._handle_prompt(response)
+
+    def _handle_prompt(self, resp):
+        # Borrowed with slight modification from https://git.io/vxu1A
+        response_page = Bfs(resp.text, 'html.parser')
+        challenge_url = resp.url.split("?")[0]
+
+        data_key = response_page.find('div', {'data-api-key': True}).get('data-api-key')
+        data_tx_id = response_page.find('div', {'data-tx-id': True}).get('data-tx-id')
+        
+        await_url = "https://content.googleapis.com/cryptauth/v1/authzen/awaittx?alt=json&key=%s" % data_key
+        await_body = {'txId': data_tx_id}
+        
+        print("Open the Google App, and tap 'Yes' on the prompt to sign in ...")
+        
+        self._session.headers['Referer'] = resp.url
+        response = self._session.post(await_url, json=await_body)
+        parsed = json.loads(response.text)
+
+        payload = {
+            'challengeId': response_page.find('input', {'name': 'challengeId'}).get('value'),
+            'challengeType': response_page.find('input', {'name': 'challengeType'}).get('value'),
+            'TL': response_page.find('input', {'name': 'TL'}).get('value'),
+            'gxf': response_page.find('input', {'name': 'gxf'}).get('value'),
+            'token': parsed['txToken'],
+            'action': response_page.find('input', {'name': 'action'}).get('value'),
+            'TrustDevice': 'on',
+        }
+
+        resp = self._session.post(challenge_url, data=payload)
+        resp.raise_for_status()
+        return resp       
 
     def logout(self):
         """Logs the session out, invalidating the cookies
@@ -270,7 +306,7 @@ class Service(object):
                           '!2m3!1e0!2sm!3i407105169!3m7!2sen!5e1105!12m4'
                           '!1e68!2m2!1sset!2sRoadmap!4e1!5m4!1e4!8m2!1e0!'
                           '1e1!6m9!1e12!2i2!26m1!4b1!30m1!'
-                          '1f1.3953487873077393!39b1!44e1!50e0!23i4111425')}
+                          '1f1.3953487873077393!39b1!44e1!50e0!23i4111425')} 
         url = 'https://www.google.com/maps/preview/locationsharing/read'
         response = self._session.get(url, params=payload)
         self._logger.debug(response.text)
